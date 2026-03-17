@@ -1,0 +1,24 @@
+# Auto detect text files and normalize line endings to LF
+* text=auto
+
+# Python files
+*.py text eol=lf
+*.pyw text eol=lf
+*.pyx text eol=lf
+
+# JavaScript files
+*.js text eol=lf
+*.jsx text eol=lf
+*.json text eol=lf
+
+# Other text files
+*.html text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.csv text eol=lf
+
+# Binary files
+*.pyc binary
+*.pyo binary
+*.egg-info binary
