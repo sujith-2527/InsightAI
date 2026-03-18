@@ -19,10 +19,13 @@ allowed_origins_env = os.getenv(
     "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080",
 )
 allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+allow_origin_regex = os.getenv("CORS_ORIGIN_REGEX", r"https://.*\.vercel\.app")
+allow_all_origins = os.getenv("CORS_ALLOW_ALL", "false").lower() in {"1", "true", "yes"}
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=["*"] if allow_all_origins else allowed_origins,
+    allow_origin_regex=None if allow_all_origins else allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -478,7 +481,7 @@ def process_query(q: Query):
 if __name__ == "__main__":
     # Allow overriding host/port via environment variables for deployment
     host = os.getenv("BACKEND_HOST", "0.0.0.0")
-    port = int(os.getenv("BACKEND_PORT", "8080"))
+    port = int(os.getenv("BACKEND_PORT", os.getenv("PORT", "8080")))
     reload = os.getenv("DEBUG_MODE", "false").lower() in ["1", "true", "yes"]
 
     uvicorn.run(app, host=host, port=port, log_level="info", reload=reload)

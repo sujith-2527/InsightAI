@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: conversational-bi-backend
+    runtime: python
+    rootDir: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: python Backend/app.py
+    autoDeploy: true
+    envVars:
+      - key: BACKEND_HOST
+        value: 0.0.0.0
+      - key: CORS_ORIGIN_REGEX
+        value: https://.*\.vercel\.app
+      - key: DEBUG_MODE
+        value: "false"
+      - key: GEMINI_API_KEY
+        sync: false

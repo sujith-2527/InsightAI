@@ -89,9 +89,7 @@ function buildCharts(
       description: "Supporting view",
       data: rows,
       xKey,
-      yKeys: secondaryType === "pie" || secondaryType === "donut" ? undefined : series,
-      dataKey: secondaryType === "pie" || secondaryType === "donut" ? yKey : undefined,
-      nameKey: secondaryType === "pie" || secondaryType === "donut" ? xKey : undefined,
+      yKeys: series,
     },
   ]
 }
