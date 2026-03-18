@@ -349,7 +349,12 @@
                 >
                 <button id="queryBtn" onclick="submitQuery()">Query</button>
             </div>
-            
+
+            <div class="query-input-group" style="margin-top: 10px; gap: 8px;">
+                <input type="file" id="csvFileInput" accept=".csv" style="flex: 1;" />
+                <button onclick="uploadCsv()">Upload CSV</button>
+            </div>
+
             <div class="quick-queries">
                 <button class="quick-query-btn" onclick="setQuery('What is the average price by model?')">
                     Average Price by Model
@@ -455,6 +460,43 @@
                 showError(`Connection error: ${err.message}`);
             } finally {
                 queryBtn.disabled = false;
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        async function uploadCsv() {
+            const fileInput = document.getElementById('csvFileInput');
+            if (!fileInput.files.length) {
+                showError('Please select a CSV file to upload.');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+
+            document.getElementById('error').classList.remove('show');
+            document.getElementById('loading').style.display = 'block';
+
+            try {
+                const response = await fetch(`${API_URL}/upload`, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                const result = await response.json();
+                if (result.error) {
+                    showError(result.error);
+                } else {
+                    // Clear existing query/results when dataset changes
+                    queryInput.value = '';
+                    document.getElementById('results').style.display = 'none';
+                    document.getElementById('emptyState').style.display = 'block';
+                    showError(`✅ ${result.message} Columns: ${result.columns.join(', ')}`);
+                }
+            } catch (err) {
+                showError(`Upload error: ${err.message}`);
+            } finally {
                 document.getElementById('loading').style.display = 'none';
             }
         }

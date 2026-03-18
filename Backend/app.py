@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
 import os
@@ -9,6 +10,20 @@ import json
 from typing import Optional
 
 app = FastAPI()
+
+# Enable CORS so the frontend can call the backend from localhost:3000 (and other origins)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Initialize Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -22,12 +37,23 @@ else:
 
 # Use absolute path to CSV file
 csv_path = os.path.join(os.path.dirname(__file__), "cars.csv")
+
+# Global DataFrame used by all endpoints
+# It can be replaced by uploading a new CSV file.
 df = pd.read_csv(csv_path)
 
 # clean column names
-df.columns = df.columns.str.strip().str.lower()
 
-print("Columns:", df.columns)
+def load_data(path: str):
+    """Load a CSV file into the global dataframe and normalize column names."""
+    global df, csv_path
+    csv_path = path
+    df = pd.read_csv(csv_path)
+    df.columns = df.columns.str.strip().str.lower()
+    print(f"Loaded CSV: {csv_path}")
+    print("Columns:", df.columns)
+
+load_data(csv_path)
 
 class Query(BaseModel):
     user_query: str
@@ -39,6 +65,24 @@ def home():
 @app.get("/columns")
 def get_columns():
     return {"columns": list(df.columns)}
+
+@app.post("/upload")
+async def upload_csv(file: UploadFile = File(...)):
+    """Upload a new CSV file and replace the current dataset."""
+
+    if not file.filename.lower().endswith(".csv"):
+        return {"error": "Only CSV files are supported."}
+
+    dest_path = os.path.join(os.path.dirname(__file__), "uploaded.csv")
+    try:
+        contents = await file.read()
+        with open(dest_path, "wb") as f:
+            f.write(contents)
+
+        load_data(dest_path)
+        return {"message": "CSV uploaded successfully.", "columns": list(df.columns)}
+    except Exception as e:
+        return {"error": f"Failed to upload CSV: {str(e)}"}
 
 def parse_query(query_text):
     """
