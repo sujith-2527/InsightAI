@@ -99,7 +99,43 @@ This project now uses a Next.js frontend located in the `Frontend/` folder.
 4. **Open the dashboard**
    - Visit: `http://localhost:3000`
 
-The frontend expects the backend API to be running at `http://127.0.0.1:8080`.
+The frontend expects the backend API to be running at `http://127.0.0.1:8080` by default.
+
+---
+
+## 🚢 Deployment (Docker)
+
+You can deploy the full stack locally using Docker.
+
+### Build and run with Docker Compose
+
+```bash
+docker-compose up --build
+```
+
+This will start:
+- Frontend at: `http://localhost:3000`
+- Backend at: `http://localhost:8080`
+
+### Environment variables
+
+- `GEMINI_API_KEY` (optional): enables Gemini AI query parsing
+- `NEXT_PUBLIC_API_URL` (frontend): set to your backend URL
+- `CORS_ORIGINS` (backend): comma-separated list of allowed origins
+
+---
+
+## 🌐 Deploy to Vercel (Frontend)
+
+1. Push this repo to GitHub.
+2. Connect the repository in Vercel.
+3. Set the environment variable:
+   - `NEXT_PUBLIC_API_URL` → your backend URL (e.g., `https://your-backend.example.com`)
+
+## 🌐 Deploy the Backend (Example)
+
+You can deploy the backend to any container-friendly host (Railway, Render, Cloud Run, etc.).
+The backend can also run directly in Docker using the provided `Backend/Dockerfile`.
 
 ## 📊 Query Examples
 

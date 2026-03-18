@@ -11,15 +11,17 @@ from typing import Optional
 
 app = FastAPI()
 
-# Enable CORS so the frontend can call the backend from localhost:3000 (and other origins)
+# Enable CORS so the frontend can call the backend from the browser.
+# In production, set CORS_ORIGINS to a comma-separated list of allowed origins.
+allowed_origins_env = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080",
+)
+allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -314,4 +316,9 @@ def process_query(q: Query):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8080, log_level="info")
+    # Allow overriding host/port via environment variables for deployment
+    host = os.getenv("BACKEND_HOST", "0.0.0.0")
+    port = int(os.getenv("BACKEND_PORT", "8080"))
+    reload = os.getenv("DEBUG_MODE", "false").lower() in ["1", "true", "yes"]
+
+    uvicorn.run(app, host=host, port=port, log_level="info", reload=reload)
