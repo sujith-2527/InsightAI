@@ -153,3 +153,7 @@ config.json
 # Test files
 test_*.py
 *_test.py
+
+# Keep frontend source library files tracked
+!Frontend/lib/
+!Frontend/lib/**

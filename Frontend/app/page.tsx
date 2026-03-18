@@ -6,7 +6,7 @@ import { ChatInput } from "@/components/chat-input"
 import { MessageList } from "@/components/message-list"
 import { WelcomeScreen } from "@/components/welcome-screen"
 import { LoadingState } from "@/components/loading-state"
-import { processQuery, parseCSV } from "@/lib/dashboard-store"
+import { processQuery, parseCSV, uploadDataset } from "@/lib/dashboard-store"
 import type { Message, DataSource } from "@/lib/types"
 
 export default function Home() {
@@ -29,38 +29,55 @@ export default function Home() {
       setIsLoading(true)
       setLoadingStep(0)
 
-      // Simulate AI processing with loading steps
-      const stepDuration = 600
-      for (let i = 0; i < 4; i++) {
-        await new Promise((resolve) => setTimeout(resolve, stepDuration))
-        setLoadingStep(i + 1)
-      }
+      try {
+        // Simulate AI processing with loading steps
+        const stepDuration = 600
+        for (let i = 0; i < 4; i++) {
+          await new Promise((resolve) => setTimeout(resolve, stepDuration))
+          setLoadingStep(i + 1)
+        }
 
-      // Process the query
-      const result = processQuery(content, dataSource)
+        // Process the query
+        const context = messages
+          .filter((msg) => msg.role === "user")
+          .slice(-5)
+          .map((msg) => msg.content)
+        const result = await processQuery(content, dataSource, context)
 
-      // Add assistant message with dashboard
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: `Here's your dashboard based on "${content}"`,
-        timestamp: new Date(),
-        dashboard: result,
+        // Add assistant message with dashboard
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `Here's your dashboard based on "${content}"`,
+          timestamp: new Date(),
+          dashboard: result,
+        }
+        setMessages((prev) => [...prev, assistantMessage])
+      } catch (error) {
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `I could not process that query right now. ${error instanceof Error ? error.message : "Please try again."}`,
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, assistantMessage])
+      } finally {
+        setIsLoading(false)
       }
-      setMessages((prev) => [...prev, assistantMessage])
-      setIsLoading(false)
     },
-    [dataSource]
+    [dataSource, messages]
   )
 
   const handleFileUpload = useCallback(async (file: File) => {
     try {
+      // Upload to backend so NL queries run against the new dataset.
+      await uploadDataset(file)
       const content = await file.text()
       const parsed = parseCSV(content)
       setDataSource(parsed)
       setUploadedFileName(file.name)
     } catch (error) {
-      console.error("Failed to parse file:", error)
+      console.error("Failed to upload or parse file:", error)
     }
   }, [])
 

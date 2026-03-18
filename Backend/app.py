@@ -1,15 +1,16 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import pandas as pd
 import os
+import re
 import uvicorn
-import socket
 import google.generativeai as genai
 import json
-from typing import Optional
+from difflib import get_close_matches
+from typing import Any
 
-app = FastAPI()
+app = FastAPI(title="Conversational BI API", version="2.0.0")
 
 # Enable CORS so the frontend can call the backend from the browser.
 # In production, set CORS_ORIGINS to a comma-separated list of allowed origins.
@@ -32,10 +33,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     GEMINI_AVAILABLE = True
-    print("✓ Gemini API configured successfully")
+    print("Gemini API configured successfully")
 else:
     GEMINI_AVAILABLE = False
-    print("⚠ Gemini API key not configured. Using local query parser.")
+    print("Gemini API key not configured. Using local query parser.")
 
 # Use absolute path to CSV file
 csv_path = os.path.join(os.path.dirname(__file__), "cars.csv")
@@ -53,20 +54,333 @@ def load_data(path: str):
     df = pd.read_csv(csv_path)
     df.columns = df.columns.str.strip().str.lower()
     print(f"Loaded CSV: {csv_path}")
-    print("Columns:", df.columns)
+    print("Columns:", list(df.columns))
 
 load_data(csv_path)
 
+
+def numeric_columns(frame: pd.DataFrame) -> list[str]:
+    return [col for col in frame.columns if pd.api.types.is_numeric_dtype(frame[col])]
+
+
+def categorical_columns(frame: pd.DataFrame) -> list[str]:
+    return [col for col in frame.columns if not pd.api.types.is_numeric_dtype(frame[col])]
+
+
+def extract_json(text: str) -> dict[str, Any] | None:
+    cleaned = text.strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    if "```json" in cleaned:
+        maybe = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
+        try:
+            return json.loads(maybe)
+        except json.JSONDecodeError:
+            return None
+    if "```" in cleaned:
+        maybe = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
+        try:
+            return json.loads(maybe)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def normalize_chart_type(value: str | None, query_text: str, groupby: str) -> str:
+    if value in {"bar", "line", "area", "pie", "donut"}:
+        return value
+
+    q = query_text.lower()
+    if any(token in q for token in ["trend", "over time", "monthly", "yearly", "quarter", "timeline"]):
+        return "line"
+    if any(token in q for token in ["share", "distribution", "percentage", "proportion", "parts"]):
+        return "donut"
+    if "year" in groupby or "month" in groupby or "date" in groupby:
+        return "line"
+    return "bar"
+
+
+def sanitize_column(candidate: str | None, default_col: str, frame: pd.DataFrame) -> str:
+    if candidate and candidate in frame.columns:
+        return candidate
+    if not candidate:
+        return default_col
+
+    lower_map = {c.lower(): c for c in frame.columns}
+    if candidate.lower() in lower_map:
+        return lower_map[candidate.lower()]
+
+    close = get_close_matches(candidate.lower(), list(lower_map.keys()), n=1, cutoff=0.75)
+    if close:
+        return lower_map[close[0]]
+    return default_col
+
+
+def normalize_aggregation(value: str | None) -> str:
+    valid = {"mean", "sum", "count", "min", "max", "median", "std"}
+    if value in valid:
+        return value
+    return "mean"
+
+
+def detect_requested_groupby(query_text: str) -> str | None:
+    patterns = [
+        r"by\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+        r"grouped\s+by\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+        r"breakdown\s+by\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, query_text.lower())
+        if match:
+            return match.group(1)
+    return None
+
+
+def default_metric(frame: pd.DataFrame) -> str:
+    preferred = ["price", "sales", "revenue", "amount", "tax", "mileage"]
+    numeric = numeric_columns(frame)
+    for col in preferred:
+        if col in numeric:
+            return col
+    return numeric[0] if numeric else frame.columns[0]
+
+
+def default_groupby(frame: pd.DataFrame) -> str:
+    preferred = ["model", "region", "category", "year", "month", "transmission", "fueltype"]
+    for col in preferred:
+        if col in frame.columns:
+            return col
+    categorical = categorical_columns(frame)
+    return categorical[0] if categorical else frame.columns[0]
+
+
+def infer_filters_local(query_text: str, frame: pd.DataFrame) -> list[dict[str, str]]:
+    filters: list[dict[str, str]] = []
+    q = query_text.lower()
+
+    for col in frame.columns:
+        if pd.api.types.is_numeric_dtype(frame[col]):
+            continue
+        values = frame[col].dropna().astype(str).str.lower().unique().tolist()
+        for value in values[:200]:
+            if re.search(rf"\b{re.escape(value)}\b", q):
+                filters.append({"column": col, "operator": "eq", "value": value})
+                break
+
+    return filters
+
+
+def build_local_plan(query_text: str) -> dict[str, Any]:
+    q = query_text.lower().strip()
+    metric = default_metric(df)
+    groupby = default_groupby(df)
+    aggregation = "mean"
+
+    agg_keywords = {
+        "average": "mean",
+        "avg": "mean",
+        "mean": "mean",
+        "total": "sum",
+        "sum": "sum",
+        "count": "count",
+        "how many": "count",
+        "number": "count",
+        "minimum": "min",
+        "min": "min",
+        "maximum": "max",
+        "max": "max",
+        "highest": "max",
+        "lowest": "min",
+        "median": "median",
+        "std": "std",
+        "standard deviation": "std",
+    }
+    for key, value in agg_keywords.items():
+        if key in q:
+            aggregation = value
+            break
+
+    tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", q)
+    for token in tokens:
+        if token in df.columns and token in numeric_columns(df):
+            metric = token
+            break
+
+    requested_groupby = detect_requested_groupby(q)
+    if requested_groupby and requested_groupby in df.columns:
+        groupby = requested_groupby
+    else:
+        for token in tokens:
+            if token in df.columns and token != metric:
+                groupby = token
+                break
+
+    top_n = None
+    top_match = re.search(r"top\s+(\d+)", q)
+    if top_match:
+        top_n = int(top_match.group(1))
+
+    return {
+        "metric": metric,
+        "groupby": groupby,
+        "aggregation": aggregation,
+        "chart_type": normalize_chart_type(None, q, groupby),
+        "filters": infer_filters_local(q, df),
+        "top_n": top_n,
+        "sort_order": "desc" if "top" in q or "highest" in q else "asc" if "lowest" in q else "desc",
+        "confidence": 0.65,
+        "warnings": [],
+    }
+
+
+def build_gemini_plan(query_text: str, context: list[str]) -> dict[str, Any] | None:
+    if not GEMINI_AVAILABLE:
+        return None
+
+    available_columns = list(df.columns)
+    prompt = f"""
+You are a strict query planner for a Business Intelligence application.
+Dataset columns: {available_columns}
+Numeric columns: {numeric_columns(df)}
+User query: {query_text}
+Conversation context (latest first): {context}
+
+Return ONLY a JSON object with this shape:
+{{
+  "metric": "column name",
+  "groupby": "column name",
+  "aggregation": "mean|sum|count|min|max|median|std",
+  "chart_type": "bar|line|area|pie|donut",
+  "filters": [{{"column":"column","operator":"eq","value":"text"}}],
+  "top_n": 5,
+  "sort_order": "asc|desc",
+  "confidence": 0.0,
+  "warnings": ["string"]
+}}
+
+Rules:
+- Use only existing columns.
+- If uncertain, use defaults metric={default_metric(df)} groupby={default_groupby(df)} aggregation=mean.
+- For trend/time requests use line.
+- For part-to-whole requests use donut.
+""".strip()
+
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        parsed = extract_json(response.text)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception as exc:
+        print(f"Gemini planning error: {exc}. Falling back to local planner.")
+        return None
+
+
+def build_plan(query_text: str, context: list[str]) -> dict[str, Any]:
+    gemini = build_gemini_plan(query_text, context)
+    local = build_local_plan(query_text)
+    candidate = gemini if gemini else local
+
+    metric = sanitize_column(candidate.get("metric"), default_metric(df), df)
+    groupby = sanitize_column(candidate.get("groupby"), default_groupby(df), df)
+    aggregation = normalize_aggregation(candidate.get("aggregation"))
+
+    if aggregation != "count" and metric not in numeric_columns(df):
+        metric = default_metric(df)
+
+    if groupby not in df.columns:
+        groupby = default_groupby(df)
+
+    requested_group = detect_requested_groupby(query_text)
+    warnings = list(candidate.get("warnings") or [])
+    if requested_group and requested_group not in df.columns:
+        suggestions = get_close_matches(requested_group, list(df.columns), n=3, cutoff=0.5)
+        if suggestions:
+            warnings.append(
+                f"Column '{requested_group}' not found. Closest matches: {', '.join(suggestions)}."
+            )
+        else:
+            warnings.append(f"Column '{requested_group}' not found in current dataset.")
+
+    raw_filters = candidate.get("filters") or []
+    filters: list[dict[str, str]] = []
+    for item in raw_filters:
+        if not isinstance(item, dict):
+            continue
+        col = sanitize_column(item.get("column"), "", df)
+        if col and col in df.columns:
+            filters.append(
+                {
+                    "column": col,
+                    "operator": "eq",
+                    "value": str(item.get("value", "")).strip().lower(),
+                }
+            )
+
+    return {
+        "metric": metric,
+        "groupby": groupby,
+        "aggregation": aggregation,
+        "chart_type": normalize_chart_type(candidate.get("chart_type"), query_text, groupby),
+        "filters": filters,
+        "top_n": candidate.get("top_n"),
+        "sort_order": candidate.get("sort_order") if candidate.get("sort_order") in {"asc", "desc"} else "desc",
+        "confidence": float(candidate.get("confidence", local.get("confidence", 0.6))),
+        "warnings": warnings,
+    }
+
+
+def apply_filters(frame: pd.DataFrame, filters: list[dict[str, str]]) -> pd.DataFrame:
+    filtered = frame.copy()
+    for flt in filters:
+        col = flt["column"]
+        val = flt["value"]
+        if not val or col not in filtered.columns:
+            continue
+        if pd.api.types.is_numeric_dtype(filtered[col]):
+            numeric_val = pd.to_numeric(val, errors="coerce")
+            if pd.notnull(numeric_val):
+                filtered = filtered[filtered[col] == numeric_val]
+        else:
+            filtered = filtered[filtered[col].astype(str).str.lower().str.contains(re.escape(val), na=False)]
+    return filtered
+
+
+def aggregate(frame: pd.DataFrame, metric: str, groupby: str, aggregation: str) -> pd.DataFrame:
+    if aggregation == "count":
+        return frame.groupby(groupby).size().reset_index(name="count")
+    if aggregation == "mean":
+        return frame.groupby(groupby)[metric].mean().reset_index()
+    if aggregation == "sum":
+        return frame.groupby(groupby)[metric].sum().reset_index()
+    if aggregation == "min":
+        return frame.groupby(groupby)[metric].min().reset_index()
+    if aggregation == "max":
+        return frame.groupby(groupby)[metric].max().reset_index()
+    if aggregation == "median":
+        return frame.groupby(groupby)[metric].median().reset_index()
+    if aggregation == "std":
+        return frame.groupby(groupby)[metric].std().reset_index()
+    return frame.groupby(groupby)[metric].mean().reset_index()
+
 class Query(BaseModel):
     user_query: str
+    context: list[str] = Field(default_factory=list)
 
 @app.get("/")
 def home():
-    return {"message": "Server running 🚀"}
+    return {"message": "Server running"}
 
 @app.get("/columns")
 def get_columns():
-    return {"columns": list(df.columns)}
+    return {
+        "columns": list(df.columns),
+        "numeric_columns": numeric_columns(df),
+        "categorical_columns": categorical_columns(df),
+        "row_count": len(df),
+    }
 
 @app.post("/upload")
 async def upload_csv(file: UploadFile = File(...)):
@@ -82,228 +396,74 @@ async def upload_csv(file: UploadFile = File(...)):
             f.write(contents)
 
         load_data(dest_path)
-        return {"message": "CSV uploaded successfully.", "columns": list(df.columns)}
+        return {
+            "message": "CSV uploaded successfully.",
+            "columns": list(df.columns),
+            "numeric_columns": numeric_columns(df),
+            "row_count": len(df),
+        }
     except Exception as e:
         return {"error": f"Failed to upload CSV: {str(e)}"}
-
-def parse_query(query_text):
-    """
-    Intelligent query parser that understands various natural language patterns
-    
-    Examples:
-    - "What is the average price by model?"
-    - "Show me total tax grouped by transmission"
-    - "How many cars by year?"
-    - "Sum of mileage by fueltype"
-    - "Min and max price by year"
-    - "Price comparison across models"
-    """
-    query_lower = query_text.lower().strip()
-    available_columns = list(df.columns)
-    
-    # Default values
-    metric = "price"
-    groupby = "model"
-    aggregation = "mean"
-    
-    # Define aggregation keywords
-    agg_keywords = {
-        "average": "mean",
-        "avg": "mean",
-        "mean": "mean",
-        "total": "sum",
-        "sum": "sum",
-        "count": "count",
-        "number": "count",
-        "how many": "count",
-        "minimum": "min",
-        "min": "min",
-        "maximum": "max",
-        "max": "max",
-        "highest": "max",
-        "lowest": "min",
-        "largest": "max",
-        "smallest": "min",
-        "median": "median",
-        "std": "std",
-        "standard deviation": "std",
-    }
-    
-    # Detect aggregation function from keywords
-    for keyword, agg_func in agg_keywords.items():
-        if keyword in query_lower:
-            aggregation = agg_func
-            break
-    
-    # Remove common words and special characters to find column names
-    tokens = query_lower.replace("?", "").replace("!", "").replace(",", "").split()
-    
-    # Find columns mentioned in query
-    mentioned_metrics = []
-    mentioned_groupby = []
-    
-    for token in tokens:
-        clean_token = token.strip('.,!?;:')
-        # Check if token matches any column name (case-insensitive partial match)
-        for col in available_columns:
-            col_lower = col.lower()
-            if clean_token == col_lower or col_lower in clean_token or clean_token in col_lower:
-                # If preceded by "by", it's likely a groupby column
-                if tokens.index(token) > 0 and tokens[tokens.index(token) - 1] == "by":
-                    mentioned_groupby.append(col)
-                else:
-                    mentioned_metrics.append(col)
-    
-    # Remove duplicates while preserving order
-    mentioned_metrics = list(dict.fromkeys(mentioned_metrics))
-    mentioned_groupby = list(dict.fromkeys(mentioned_groupby))
-    
-    # Set metric (prefer first mentioned metric, or use default)
-    if mentioned_metrics:
-        metric = mentioned_metrics[0]
-    
-    # Set groupby (prefer first mentioned groupby, or use default)
-    if mentioned_groupby:
-        groupby = mentioned_groupby[0]
-    
-    # Validate columns exist
-    if metric not in df.columns:
-        metric = "price"
-    if groupby not in df.columns:
-        groupby = "model"
-    
-    # Simple validation: ignore non-numeric columns for aggregation
-    if df[metric].dtype not in ['float64', 'float32', 'int64', 'int32']:
-        metric = "price"
-    
-    return metric, groupby, aggregation
-
-def parse_query_with_gemini(query_text):
-    """
-    Enhanced query parser using Google Gemini API for better understanding
-    of natural language queries. Falls back to local parser if API is unavailable.
-    """
-    if not GEMINI_AVAILABLE:
-        return parse_query(query_text)
-    
-    try:
-        available_columns = list(df.columns)
-        
-        prompt = f"""You are a data analysis assistant. Given a user query about a cars dataset, extract:
-1. The metric column to analyze (one of: {', '.join(available_columns)})
-2. The groupby column (one of: {', '.join(available_columns)})
-3. The aggregation function (mean, sum, count, min, max, median, or std)
-
-User Query: {query_text}
-
-Respond in this exact JSON format:
-{{
-    "metric": "column_name",
-    "groupby": "column_name",
-    "aggregation": "function_name"
-}}
-
-If the query is ambiguous, make reasonable defaults:
-- metric: defaults to 'price'
-- groupby: defaults to 'model'
-- aggregation: defaults to 'mean'
-
-Only respond with valid JSON, no other text."""
-        
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
-        
-        # Parse the response
-        response_text = response.text.strip()
-        
-        # Try to extract JSON from response
-        try:
-            if '```json' in response_text:
-                json_str = response_text.split('```json')[1].split('```')[0].strip()
-            elif '```' in response_text:
-                json_str = response_text.split('```')[1].split('```')[0].strip()
-            else:
-                json_str = response_text
-            
-            parsed = json.loads(json_str)
-            metric = parsed.get('metric', 'price')
-            groupby = parsed.get('groupby', 'model')
-            aggregation = parsed.get('aggregation', 'mean')
-        except (json.JSONDecodeError, IndexError, KeyError, ValueError):
-            # Fallback to local parser if JSON parsing fails
-            return parse_query(query_text)
-        
-        # Validate columns exist
-        if metric not in df.columns:
-            metric = 'price'
-        if groupby not in df.columns:
-            groupby = 'model'
-        
-        # Validate aggregation type
-        valid_aggs = ['mean', 'sum', 'count', 'min', 'max', 'median', 'std']
-        if aggregation not in valid_aggs:
-            aggregation = 'mean'
-        
-        # Validate metric is numeric
-        if df[metric].dtype not in ['float64', 'float32', 'int64', 'int32']:
-            metric = 'price'
-        
-        return metric, groupby, aggregation
-    
-    except Exception as e:
-        print(f"Gemini API error: {e}. Falling back to local parser.")
-        return parse_query(query_text)
 
 @app.post("/query")
 def process_query(q: Query):
     try:
         query_text = q.user_query.strip()
-        
+
         if not query_text:
             return {"error": "Query text cannot be empty"}
-        
-        # Parse the user query intelligently (uses Gemini if available, else local parser)
-        metric, groupby, aggregation = parse_query_with_gemini(query_text)
-        
+
+        plan = build_plan(query_text, q.context)
+        metric = plan["metric"]
+        groupby = plan["groupby"]
+        aggregation = plan["aggregation"]
+
         try:
-            # Perform the appropriate aggregation
-            if aggregation == "count":
-                result = df.groupby(groupby).size().reset_index(name=metric)
-            elif aggregation == "mean":
-                result = df.groupby(groupby)[metric].mean().reset_index()
-            elif aggregation == "sum":
-                result = df.groupby(groupby)[metric].sum().reset_index()
-            elif aggregation == "min":
-                result = df.groupby(groupby)[metric].min().reset_index()
-            elif aggregation == "max":
-                result = df.groupby(groupby)[metric].max().reset_index()
-            elif aggregation == "median":
-                result = df.groupby(groupby)[metric].median().reset_index()
-            elif aggregation == "std":
-                result = df.groupby(groupby)[metric].std().reset_index()
-            else:
-                result = df.groupby(groupby)[metric].mean().reset_index()
-            
-            # Remove NaN values
+            working = apply_filters(df, plan["filters"])
+
+            if working.empty:
+                return {
+                    "error": "No rows matched the requested filters.",
+                    "meta": {
+                        "query_parsed": f"{aggregation}({metric}) grouped by {groupby}",
+                        "warnings": plan["warnings"],
+                    },
+                }
+
+            result = aggregate(working, metric, groupby, aggregation)
+
             result = result.dropna()
-            
-            # Round numeric results to 2 decimal places
-            if result[metric].dtype in ['float64', 'float32', 'int64', 'int32']:
-                result[metric] = result[metric].round(2)
-            
-            # Rename columns for consistency in response
-            result.columns = [groupby, metric]
-            
+
+            value_col = "count" if aggregation == "count" else metric
+            if value_col in result.columns and pd.api.types.is_numeric_dtype(result[value_col]):
+                result[value_col] = result[value_col].round(2)
+
+            sort_ascending = plan["sort_order"] == "asc"
+            if value_col in result.columns:
+                result = result.sort_values(by=value_col, ascending=sort_ascending)
+
+            top_n = plan.get("top_n")
+            if isinstance(top_n, int) and top_n > 0:
+                result = result.head(top_n)
+
+            record_count = len(result)
+            if record_count > 50:
+                result = result.head(50)
+                plan["warnings"].append("Result limited to first 50 groups for readability.")
+
             return {
                 "data": result.to_dict(orient="records"),
                 "meta": {
-                    "chart_type": "bar",
+                    "chart_type": plan["chart_type"],
                     "x": groupby,
-                    "y": metric,
+                    "y": value_col,
                     "aggregation": aggregation,
                     "query_parsed": f"{aggregation}({metric}) grouped by {groupby}",
-                    "record_count": len(result)
-                }
+                    "record_count": record_count,
+                    "confidence": round(plan["confidence"], 2),
+                    "filters_applied": plan["filters"],
+                    "warnings": plan["warnings"],
+                },
             }
         except Exception as agg_error:
             return {
