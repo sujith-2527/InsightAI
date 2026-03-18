@@ -50,6 +50,15 @@ export interface BackendFilter {
   value: string
 }
 
+export interface QueryKpis {
+  source_row_count?: number
+  count?: number
+  average?: number
+  total?: number
+  minimum?: number
+  maximum?: number
+}
+
 export interface QueryMeta {
   chart_type?: "bar" | "line" | "area" | "pie" | "donut"
   x?: string
@@ -60,4 +69,5 @@ export interface QueryMeta {
   confidence?: number
   filters_applied?: BackendFilter[]
   warnings?: string[]
+  kpis?: QueryKpis
 }

@@ -6,6 +6,7 @@ import { ChatInput } from "@/components/chat-input"
 import { MessageList } from "@/components/message-list"
 import { WelcomeScreen } from "@/components/welcome-screen"
 import { LoadingState } from "@/components/loading-state"
+import { DataPreview } from "@/components/data-preview"
 import { processQuery, parseCSV, uploadDataset } from "@/lib/dashboard-store"
 import type { Message, DataSource } from "@/lib/types"
 
@@ -107,6 +108,9 @@ export default function Home() {
               </div>
             )}
           </div>
+
+          {/* Data Preview */}
+          <DataPreview dataSource={dataSource} />
 
           {/* Chat Input - Fixed at bottom */}
           <div className="sticky bottom-0 border-t border-border bg-background py-4">

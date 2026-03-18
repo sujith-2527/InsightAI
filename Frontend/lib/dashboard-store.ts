@@ -21,7 +21,7 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value)
 }
 
-function buildInsights(rows: Array<Record<string, string | number>>, xKey: string, yKey: string): DashboardInsight[] {
+function buildInsights(rows: Array<Record<string, string | number>>, xKey: string, yKey: string, meta?: QueryMeta): DashboardInsight[] {
   const numericValues = rows
     .map((row) => toNumber(row[yKey]))
     .filter((value): value is number => value !== null)
@@ -33,8 +33,12 @@ function buildInsights(rows: Array<Record<string, string | number>>, xKey: strin
     ]
   }
 
-  const total = numericValues.reduce((sum, value) => sum + value, 0)
-  const average = total / numericValues.length
+  const groupedTotal = numericValues.reduce((sum, value) => sum + value, 0)
+  const groupedAverage = groupedTotal / numericValues.length
+
+  const trueAverage = meta?.kpis?.average
+  const trueTotal = meta?.kpis?.total
+  const sourceRows = meta?.kpis?.source_row_count
 
   let topRow: Record<string, string | number> | null = null
   for (const row of rows) {
@@ -48,11 +52,29 @@ function buildInsights(rows: Array<Record<string, string | number>>, xKey: strin
   const topLabel = topRow ? String(topRow[xKey]) : "N/A"
   const topValue = topRow ? toNumber(topRow[yKey]) ?? 0 : 0
 
+  if (yKey === "count") {
+    const countValue = meta?.kpis?.count ?? numericValues[0] ?? rows.length
+    return [
+      { title: "Filtered Rows", value: String(sourceRows ?? rows.length), changeType: "neutral" },
+      { title: `Top ${xKey}`, value: topLabel, change: formatNumber(topValue), changeType: "positive" },
+      { title: "Count", value: formatNumber(countValue), changeType: "neutral" },
+      { title: "Filters Applied", value: String(meta?.filters_applied?.length ?? 0), changeType: "neutral" },
+    ]
+  }
+
   return [
-    { title: "Groups", value: String(rows.length), changeType: "neutral" },
+    { title: sourceRows ? "Filtered Rows" : "Groups", value: String(sourceRows ?? rows.length), changeType: "neutral" },
     { title: `Top ${xKey}`, value: topLabel, change: formatNumber(topValue), changeType: "positive" },
-    { title: `Average ${yKey}`, value: formatNumber(average), changeType: "neutral" },
-    { title: `Total ${yKey}`, value: formatNumber(total), changeType: "positive" },
+    {
+      title: `Average ${yKey}`,
+      value: formatNumber(trueAverage ?? groupedAverage),
+      changeType: "neutral",
+    },
+    {
+      title: `Total ${yKey}`,
+      value: formatNumber(trueTotal ?? groupedTotal),
+      changeType: "positive",
+    },
   ]
 }
 
@@ -94,30 +116,6 @@ function buildCharts(
   ]
 }
 
-function fallbackFromLocalDataSource(query: string, dataSource: DataSource): DashboardData {
-  if (!dataSource.rows.length) {
-    throw new Error("Uploaded dataset is empty.")
-  }
-
-  const sample = dataSource.rows[0]
-  const columns = Object.keys(sample)
-
-  const firstNumeric = columns.find((col) => toNumber(sample[col]) !== null)
-  const firstCategory = columns.find((col) => col !== firstNumeric)
-
-  if (!firstNumeric || !firstCategory) {
-    throw new Error("Could not infer chart columns from uploaded data.")
-  }
-
-  const rows = dataSource.rows.slice(0, 20)
-
-  return {
-    summary: `Showing a quick local preview for \"${query}\" using uploaded data.`,
-    insights: buildInsights(rows, firstCategory, firstNumeric),
-    charts: buildCharts(rows, firstCategory, firstNumeric, "bar"),
-  }
-}
-
 function warningInsights(warnings: string[]): DashboardInsight[] {
   if (!warnings.length) return []
   return warnings.slice(0, 2).map((warning, index) => ({
@@ -129,7 +127,7 @@ function warningInsights(warnings: string[]): DashboardInsight[] {
 
 export async function processQuery(
   query: string,
-  dataSource: DataSource | null,
+  _dataSource: DataSource | null,
   context: string[] = []
 ): Promise<DashboardData> {
   const response = await fetch(`${API_URL}/query`, {
@@ -146,9 +144,6 @@ export async function processQuery(
   }
 
   if (!response.ok || payload.error) {
-    if (dataSource) {
-      return fallbackFromLocalDataSource(query, dataSource)
-    }
     throw new Error(payload.error || "Backend query failed.")
   }
 
@@ -157,7 +152,7 @@ export async function processQuery(
   const yKey = payload.meta?.y || "value"
   const warnings = payload.meta?.warnings || []
 
-  const generatedInsights = buildInsights(rows, xKey, yKey)
+  const generatedInsights = buildInsights(rows, xKey, yKey, payload.meta)
   const extraInsights = warningInsights(warnings)
 
   return {
