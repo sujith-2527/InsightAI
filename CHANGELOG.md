@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-03-18
+
+### Added
+- **Google Gemini API Integration** - Optional LLM-powered query understanding
+  - Enhanced natural language processing for more complex queries
+  - Intelligent detection of metrics, groupby columns, and aggregation functions
+  - Automatic fallback to local parser if API unavailable
+- Configuration support for `GEMINI_API_KEY` environment variable
+- New `parse_query_with_gemini()` function for AI-enhanced query parsing
+- `.env.example` template with Gemini API configuration
+- Documentation for setting up and using Gemini API
+
+### Improved
+- Better handling of ambiguous natural language queries
+- More robust JSON parsing from Gemini responses
+- Enhanced error handling with graceful fallbacks
+
 ## [1.0.0] - 2026-01-15
 
 ### Added

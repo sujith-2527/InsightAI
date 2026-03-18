@@ -6,11 +6,13 @@ An intelligent, conversational data analytics dashboard that understands natural
 
 - **Natural Language Processing** - Ask questions in plain English, no SQL required
 - **Intelligent Query Parser** - Automatically detects metrics, grouping, and aggregation functions
+- **Optional Gemini AI Integration** - Enhanced query understanding with Google Gemini API (optional)
 - **Real-time Visualization** - Dynamic charts and graphs based on your data
 - **Multiple Aggregations** - Sum, Average, Count, Min, Max, Median, Standard Deviation
 - **Modern UI** - Beautiful dark theme with glassmorphism effects
 - **Query History** - Track and re-run previous analyses
 - **Quick Queries** - Pre-built buttons for common analysis patterns
+- **Hybrid Intelligence** - Fallback to local parser if API unavailable
 
 ## 🏗️ Architecture
 
@@ -41,10 +43,35 @@ Visualization Layer
 
 2. **Install Python Dependencies**
    ```bash
-   pip install fastapi pandas uvicorn
+   pip install -r requirements.txt
    ```
 
-3. **Start the Backend Server**
+3. **Optional: Configure Gemini API for Enhanced Query Understanding**
+   
+   To enable Google Gemini AI for better natural language understanding:
+   
+   a. Get your API key:
+      - Visit: [Google AI Studio](https://aistudio.google.com/apikey)
+      - Create a new API key
+   
+   b. Set environment variable:
+      ```bash
+      # On Windows (PowerShell)
+      $env:GEMINI_API_KEY = "your_api_key_here"
+      
+      # On macOS/Linux (Bash)
+      export GEMINI_API_KEY="your_api_key_here"
+      ```
+   
+   c. Or create a `.env` file:
+      ```bash
+      cp .env.example .env
+      # Edit .env and add your GEMINI_API_KEY
+      ```
+   
+   **Note:** If GEMINI_API_KEY is not set, the system automatically falls back to the local query parser.
+
+4. **Start the Backend Server**
    ```bash
    python app.py
    ```
@@ -155,6 +182,7 @@ Response:
 | Frontend | HTML5/CSS3/JavaScript | ES6+ |
 | Charting | Chart.js | 4.4+ |
 | API Communication | Fetch API | Standard |
+| AI Integration | Google Gemini API | Latest (Optional) |
 
 ## 📈 Performance
 

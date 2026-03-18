@@ -4,8 +4,21 @@ import pandas as pd
 import os
 import uvicorn
 import socket
+import google.generativeai as genai
+import json
+from typing import Optional
 
 app = FastAPI()
+
+# Initialize Gemini API
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    GEMINI_AVAILABLE = True
+    print("✓ Gemini API configured successfully")
+else:
+    GEMINI_AVAILABLE = False
+    print("⚠ Gemini API key not configured. Using local query parser.")
 
 # Use absolute path to CSV file
 csv_path = os.path.join(os.path.dirname(__file__), "cars.csv")
@@ -119,6 +132,82 @@ def parse_query(query_text):
     
     return metric, groupby, aggregation
 
+def parse_query_with_gemini(query_text):
+    """
+    Enhanced query parser using Google Gemini API for better understanding
+    of natural language queries. Falls back to local parser if API is unavailable.
+    """
+    if not GEMINI_AVAILABLE:
+        return parse_query(query_text)
+    
+    try:
+        available_columns = list(df.columns)
+        
+        prompt = f"""You are a data analysis assistant. Given a user query about a cars dataset, extract:
+1. The metric column to analyze (one of: {', '.join(available_columns)})
+2. The groupby column (one of: {', '.join(available_columns)})
+3. The aggregation function (mean, sum, count, min, max, median, or std)
+
+User Query: {query_text}
+
+Respond in this exact JSON format:
+{{
+    "metric": "column_name",
+    "groupby": "column_name",
+    "aggregation": "function_name"
+}}
+
+If the query is ambiguous, make reasonable defaults:
+- metric: defaults to 'price'
+- groupby: defaults to 'model'
+- aggregation: defaults to 'mean'
+
+Only respond with valid JSON, no other text."""
+        
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        
+        # Parse the response
+        response_text = response.text.strip()
+        
+        # Try to extract JSON from response
+        try:
+            if '```json' in response_text:
+                json_str = response_text.split('```json')[1].split('```')[0].strip()
+            elif '```' in response_text:
+                json_str = response_text.split('```')[1].split('```')[0].strip()
+            else:
+                json_str = response_text
+            
+            parsed = json.loads(json_str)
+            metric = parsed.get('metric', 'price')
+            groupby = parsed.get('groupby', 'model')
+            aggregation = parsed.get('aggregation', 'mean')
+        except (json.JSONDecodeError, IndexError, KeyError, ValueError):
+            # Fallback to local parser if JSON parsing fails
+            return parse_query(query_text)
+        
+        # Validate columns exist
+        if metric not in df.columns:
+            metric = 'price'
+        if groupby not in df.columns:
+            groupby = 'model'
+        
+        # Validate aggregation type
+        valid_aggs = ['mean', 'sum', 'count', 'min', 'max', 'median', 'std']
+        if aggregation not in valid_aggs:
+            aggregation = 'mean'
+        
+        # Validate metric is numeric
+        if df[metric].dtype not in ['float64', 'float32', 'int64', 'int32']:
+            metric = 'price'
+        
+        return metric, groupby, aggregation
+    
+    except Exception as e:
+        print(f"Gemini API error: {e}. Falling back to local parser.")
+        return parse_query(query_text)
+
 @app.post("/query")
 def process_query(q: Query):
     try:
@@ -127,8 +216,8 @@ def process_query(q: Query):
         if not query_text:
             return {"error": "Query text cannot be empty"}
         
-        # Parse the user query intelligently
-        metric, groupby, aggregation = parse_query(query_text)
+        # Parse the user query intelligently (uses Gemini if available, else local parser)
+        metric, groupby, aggregation = parse_query_with_gemini(query_text)
         
         try:
             # Perform the appropriate aggregation
