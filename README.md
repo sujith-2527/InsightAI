@@ -78,16 +78,28 @@ Visualization Layer
    - Server starts on: `http://127.0.0.1:8080`
    - Data loaded from: `cars.csv`
 
-### Frontend Setup
+### Frontend Setup (Next.js)
 
-1. **Open in Browser**
-   - Navigate to: `Frontend/index.html`
-   - Or open the file directly in your browser
+This project now uses a Next.js frontend located in the `Frontend/` folder.
 
-2. **Start Querying**
-   - Type: `"What is the average price by model?"`
-   - Click Query or press Enter
-   - View results in charts and tables
+1. **Install Node.js (>= 18)**
+   - Download: https://nodejs.org/
+
+2. **Install dependencies**
+   ```bash
+   cd Frontend
+   npm install
+   ```
+
+3. **Run the frontend in development mode**
+   ```bash
+   npm run dev
+   ```
+
+4. **Open the dashboard**
+   - Visit: `http://localhost:3000`
+
+The frontend expects the backend API to be running at `http://127.0.0.1:8080`.
 
 ## 📊 Query Examples
 
